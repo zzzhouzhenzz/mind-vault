@@ -1,0 +1,23 @@
+[project]
+name = "mind-vault"
+version = "0.1.0"
+description = "Obsidian-compatible mind vault — file-based note storage with search, graph traversal, and MCP integration"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = [
+    "fastmcp>=2.0.0",
+]
+
+[project.scripts]
+mind-vault-mcp = "mind_vault.mcp_server:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
