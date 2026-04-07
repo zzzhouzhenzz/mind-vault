@@ -1,4 +1,4 @@
-"""Tests for MCP server tools."""
+"""Tests for MCP query server tools."""
 
 from mind_vault.mcp_server import create_mcp_tools
 from mind_vault.vault import Vault

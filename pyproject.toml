@@ -1,7 +1,7 @@
 [project]
 name = "mind-vault"
 version = "0.1.0"
-description = "Obsidian-compatible mind vault — file-based note storage with search, graph traversal, and MCP integration"
+description = "Obsidian-compatible file-based note storage with search and graph traversal"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
@@ -21,3 +21,6 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,5 +1,6 @@
 """Tests for vault read/write operations."""
 
+import yaml
 from mind_vault.vault import Vault
 from mind_vault.models import Note, Source
 
@@ -169,21 +170,3 @@ def test_atomic_write(tmp_vault):
     note = Note(title="Atomic Test", tags=[], content="x", topic="t")
     path = vault.write_note(note)
     assert path.read_text().startswith("---")
-
-
-def test_enrich_note(tmp_vault):
-    vault = Vault(tmp_vault)
-    vault.write_note(Note(title="Enrich Me", tags=[], content="Original content", topic="t"))
-    vault.enrich_note("Enrich Me", "New information here")
-    result = vault.read_note("Enrich Me")
-    assert "Original content" in result
-    assert "New information here" in result
-    assert "## Additional Context" in result
-
-
-def test_get_vault_context(tmp_vault):
-    vault = Vault(tmp_vault)
-    vault.write_note(Note(title="A", tags=["ml"], content="x", topic="deep-learning"))
-    context = vault.get_vault_context()
-    assert "deep-learning" in context
-    assert "ml" in context

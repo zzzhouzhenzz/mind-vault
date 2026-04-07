@@ -1,4 +1,4 @@
-"""MCP server — exposes Vault search and traversal tools to Claude."""
+"""MCP query server — exposes Vault search and traversal tools to Claude."""
 
 from pathlib import Path
 from typing import Callable
@@ -9,7 +9,7 @@ from mind_vault.config import VAULT_DIR
 from mind_vault.vault import Vault
 
 _INSTRUCTIONS = """
-You have access to a personal mind vault. Use these tools in an agentic loop to answer questions grounded in the vault.
+You have access to a personal knowledge vault. Use these tools in an agentic loop to answer questions grounded in the vault.
 
 ## Tool usage strategy
 1. Start with `list_topics` to see what subject areas exist.
@@ -17,7 +17,7 @@ You have access to a personal mind vault. Use these tools in an agentic loop to 
 3. Use `search_by_tag` to filter by tag (e.g. "ml", "paper", "concept").
 4. Use `read_note` to read the full content of a specific note.
 5. Use `follow_links` and `follow_backlinks` to traverse the knowledge graph.
-6. Iterate: search -> read -> follow links -> search again until you have enough context.
+6. Iterate: search → read → follow links → search again until you have enough context.
 
 ## Citation format
 When citing notes in your answers, use [[Note Title]] Obsidian-style links.

@@ -1,8 +1,6 @@
-"""Shared test fixtures for Mind Vault tests."""
+"""Shared test fixtures for mind-vault tests."""
 
-from pathlib import Path
 import pytest
-
 
 @pytest.fixture
 def tmp_vault(tmp_path):

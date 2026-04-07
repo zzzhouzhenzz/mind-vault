@@ -1,4 +1,4 @@
-"""Data models for Mind Vault."""
+"""Data models for mind-vault storage."""
 
 import re
 from dataclasses import dataclass, field
@@ -58,7 +58,7 @@ class Source:
     """Metadata about an ingested source."""
     url: str
     title: str
-    source_type: str  # article, pdf, youtube
+    source_type: str
     summary: str = ""
     concept_notes: list[str] = field(default_factory=list)
     truncated: bool = False

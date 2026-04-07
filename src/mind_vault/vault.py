@@ -16,6 +16,7 @@ def _parse_frontmatter(text: str) -> dict:
     """Parse YAML frontmatter from markdown text. Returns dict of properties."""
     if not text.startswith("---"):
         return {}
+    # Find closing ---
     rest = text[3:]
     end = rest.find("\n---")
     if end == -1:
@@ -66,6 +67,7 @@ def _atomic_write(path: Path, content: str) -> None:
 def _iter_notes(vault_root: Path):
     """Yield all .md files under vault root, excluding _index, sources, templates."""
     for md_file in vault_root.rglob("*.md"):
+        # Skip excluded top-level dirs
         try:
             rel = md_file.relative_to(vault_root)
         except ValueError:
@@ -250,6 +252,7 @@ class Vault:
                 "mtime": mtime,
             })
         notes.sort(key=lambda x: x["mtime"], reverse=True)
+        # Remove mtime from returned dicts
         for note in notes:
             note.pop("mtime")
         return notes[:n]
@@ -295,6 +298,7 @@ class Vault:
         index_dir = self.root / "_index"
         index_dir.mkdir(exist_ok=True)
 
+        # Collect all notes' frontmatter
         topic_notes: dict[str, list[str]] = {}
         tag_notes: dict[str, list[str]] = {}
 

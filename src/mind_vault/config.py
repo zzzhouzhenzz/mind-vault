@@ -1,4 +1,4 @@
-"""Mind Vault configuration — vault path defaults."""
+"""mind-vault configuration."""
 
 import os
 from pathlib import Path

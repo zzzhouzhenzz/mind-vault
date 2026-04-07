@@ -1,6 +1,6 @@
-"""Mind Vault — Obsidian-compatible note storage with search and graph traversal."""
+"""mind-vault — Obsidian-compatible file-based note storage."""
 
 from mind_vault.models import Note, Source
 from mind_vault.vault import Vault
 
-__all__ = ["Vault", "Note", "Source"]
+__all__ = ["Note", "Source", "Vault"]
