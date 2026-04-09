@@ -1,4 +1,4 @@
-"""MCP query server — exposes Vault search and traversal tools to Claude."""
+"""MCP server — exposes Vault read, write, search, and fetch tools to Claude."""
 
 from pathlib import Path
 from typing import Callable
@@ -9,15 +9,25 @@ from mind_vault.config import VAULT_DIR
 from mind_vault.vault import Vault
 
 _INSTRUCTIONS = """
-You have access to a personal knowledge vault. Use these tools in an agentic loop to answer questions grounded in the vault.
+You have access to a personal knowledge vault. Use these tools to search, read, write, and ingest knowledge.
 
-## Tool usage strategy
+## Reading & searching
 1. Start with `list_topics` to see what subject areas exist.
 2. Use `search_vault` for keyword search across all note content.
 3. Use `search_by_tag` to filter by tag (e.g. "ml", "paper", "concept").
 4. Use `read_note` to read the full content of a specific note.
 5. Use `follow_links` and `follow_backlinks` to traverse the knowledge graph.
 6. Iterate: search → read → follow links → search again until you have enough context.
+
+## Writing
+- Use `write_note` to create a new atomic concept note.
+- Use `write_source` to record metadata about an ingested source.
+- Use `enrich_note` to append new content to an existing note.
+
+## Ingesting from URLs
+- Use `fetch_url` to extract text from a URL (article, YouTube, PDF).
+- Read the fetched text, break it into atomic concepts, then use `write_note` for each concept and `write_source` for the source metadata.
+- Check `note_exists` before writing to avoid duplicates — use `enrich_note` instead if the note already exists.
 
 ## Citation format
 When citing notes in your answers, use [[Note Title]] Obsidian-style links.
@@ -45,6 +55,125 @@ def create_mcp_tools(vault: Vault) -> dict[str, Callable]:
     Each tool returns a formatted string. Errors return messages, not exceptions.
     This factory allows testability without running the MCP server.
     """
+
+    # ------------------------------------------------------------------
+    # Write tools
+    # ------------------------------------------------------------------
+
+    def write_note(
+        title: str,
+        tags: list[str],
+        content: str,
+        topic: str,
+        aliases: list[str] | None = None,
+        source_url: str = "",
+        source_type: str = "",
+        links: list[str] | None = None,
+    ) -> str:
+        """Create a new atomic concept note in the vault.
+
+        Args:
+            title: Short descriptive title for the note.
+            tags: List of lowercase tags (e.g. ["ml", "transformers"]).
+            content: The note content (plain prose, no markdown).
+            topic: Primary topic area — becomes the folder name.
+            aliases: Alternative names for this concept (optional).
+            source_url: URL of the source material (optional).
+            source_type: Type of source — article, youtube, pdf, etc. (optional).
+            links: Titles of related notes to link to via [[wikilinks]] (optional).
+        """
+        from mind_vault.models import Note
+        note = Note(
+            title=title,
+            tags=tags,
+            content=content,
+            topic=topic,
+            aliases=aliases or [],
+            source_url=source_url,
+            source_type=source_type,
+            links=links or [],
+        )
+        path = vault.write_note(note)
+        return f"Note '{title}' written to {path}"
+
+    def write_source(
+        url: str,
+        title: str,
+        source_type: str,
+        summary: str = "",
+        concept_notes: list[str] | None = None,
+    ) -> str:
+        """Record metadata about an ingested source (article, video, paper, etc.).
+
+        Args:
+            url: URL of the source.
+            title: Title of the source.
+            source_type: Type — article, youtube, pdf, paper, etc.
+            summary: 1-3 sentence summary (optional).
+            concept_notes: Titles of notes generated from this source (optional).
+        """
+        from mind_vault.models import Source
+        source = Source(
+            url=url,
+            title=title,
+            source_type=source_type,
+            summary=summary,
+            concept_notes=concept_notes or [],
+        )
+        path = vault.write_source(source)
+        return f"Source '{title}' written to {path}"
+
+    def enrich_note(title: str, new_content: str) -> str:
+        """Append new content to an existing note.
+
+        Args:
+            title: Title or alias of the note to enrich.
+            new_content: Content to append as an additional section.
+        """
+        if not vault.note_exists(title):
+            return f"Note '{title}' not found."
+        vault.enrich_note(title, new_content)
+        return f"Note '{title}' enriched with new content."
+
+    def note_exists(title: str) -> str:
+        """Check if a note with the given title or alias exists.
+
+        Args:
+            title: Title or alias to check.
+        """
+        exists = vault.note_exists(title)
+        return f"Note '{title}' {'exists' if exists else 'does not exist'}."
+
+    # ------------------------------------------------------------------
+    # Fetch tool
+    # ------------------------------------------------------------------
+
+    def fetch_url(url: str) -> str:
+        """Fetch and extract text content from a URL.
+
+        Supports articles (via trafilatura), YouTube transcripts, and PDFs.
+        Returns the extracted text for you to comprehend and turn into notes.
+
+        Args:
+            url: The URL to fetch content from.
+        """
+        from mind_vault.fetcher import fetch_url as _fetch
+        result = _fetch(url)
+        if not result.success:
+            return f"Fetch failed: {result.error}"
+        parts = []
+        if result.title:
+            parts.append(f"Title: {result.title}")
+        parts.append(f"Source type: {result.source_type}")
+        if result.truncated:
+            parts.append("(Content was truncated to 100K characters)")
+        parts.append("")
+        parts.append(result.text)
+        return "\n".join(parts)
+
+    # ------------------------------------------------------------------
+    # Read/search tools
+    # ------------------------------------------------------------------
 
     def search_vault(query: str) -> str:
         """Search all notes for a keyword or phrase (case-insensitive)."""
@@ -122,6 +251,13 @@ def create_mcp_tools(vault: Vault) -> dict[str, Callable]:
         return "\n".join(lines)
 
     return {
+        # Write tools
+        "write_note": write_note,
+        "write_source": write_source,
+        "enrich_note": enrich_note,
+        "note_exists": note_exists,
+        "fetch_url": fetch_url,
+        # Read/search tools
         "search_vault": search_vault,
         "search_by_tag": search_by_tag,
         "search_by_property": search_by_property,
@@ -143,14 +279,8 @@ def main() -> None:
         instructions=_INSTRUCTIONS,
     )
 
-    mcp.tool()(tools["search_vault"])
-    mcp.tool()(tools["search_by_tag"])
-    mcp.tool()(tools["search_by_property"])
-    mcp.tool()(tools["read_note"])
-    mcp.tool()(tools["follow_links"])
-    mcp.tool()(tools["follow_backlinks"])
-    mcp.tool()(tools["list_topics"])
-    mcp.tool()(tools["list_recent"])
+    for tool_fn in tools.values():
+        mcp.tool()(tool_fn)
 
     mcp.run(transport="stdio")
 
