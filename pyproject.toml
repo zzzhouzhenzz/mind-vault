@@ -13,7 +13,15 @@ dependencies = [
 mind-vault-mcp = "mind_vault.mcp_server:main"
 
 [project.optional-dependencies]
+fetch = [
+    "trafilatura>=2.0",
+    "beautifulsoup4>=4.12",
+    "httpx>=0.27",
+    "youtube-transcript-api>=1.0",
+    "pymupdf>=1.25",
+]
 dev = ["pytest>=8.0"]
+all = ["mind-vault[fetch,dev]"]
 
 [build-system]
 requires = ["setuptools>=68.0"]
