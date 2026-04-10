@@ -334,6 +334,11 @@ class VectorIndex:
         top_idx = np.argpartition(-scores, k - 1)[:k]
         top_idx = top_idx[np.argsort(-scores[top_idx])]
 
+        # Filter out zero / negative similarity — truly orthogonal vectors
+        # shouldn't count as hits. This matters most for queries whose
+        # tokens don't appear anywhere in the index (the BM25 side returns
+        # nothing, and the dense side should follow suit rather than
+        # returning arbitrary ties at score 0).
         return [
             VectorSearchResult(
                 path=self._paths[i],
@@ -342,4 +347,5 @@ class VectorIndex:
                 score=float(scores[i]),
             )
             for i in top_idx
+            if scores[i] > 0.0
         ]
