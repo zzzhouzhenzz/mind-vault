@@ -1,6 +1,7 @@
 """Tests for vault read/write operations."""
 
 import yaml
+from mind_vault.search_index import INDEX_FILENAME
 from mind_vault.vault import Vault
 from mind_vault.models import Note, Source
 
@@ -170,3 +171,101 @@ def test_atomic_write(tmp_vault):
     note = Note(title="Atomic Test", tags=[], content="x", topic="t")
     path = vault.write_note(note)
     assert path.read_text().startswith("---")
+
+
+# ---------------------------------------------------------------------------
+# Search index integration
+# ---------------------------------------------------------------------------
+
+def test_write_note_populates_search_index(tmp_vault):
+    vault = Vault(tmp_vault)
+    vault.write_note(Note(
+        title="Retrieval-Augmented Generation",
+        tags=["rag", "llm"],
+        content="Ground LLMs by retrieving from an external knowledge base.",
+        topic="llm",
+    ))
+    # Index file should exist now
+    assert (tmp_vault / INDEX_FILENAME).exists()
+    assert not vault.search_index.is_empty()
+
+
+def test_search_uses_bm25_ranking_title_beats_body(tmp_vault):
+    """Title matches should outrank body-only mentions."""
+    vault = Vault(tmp_vault)
+    vault.write_note(Note(
+        title="Grounding",
+        tags=[],
+        content="LLMs benefit from retrieval augmentation to reduce hallucination.",
+        topic="llm",
+    ))
+    vault.write_note(Note(
+        title="Retrieval Augmentation",
+        tags=[],
+        content="A generic note that has nothing to do with the query.",
+        topic="llm",
+    ))
+    results = vault.search("retrieval augmentation")
+    assert len(results) >= 1
+    # The title-match note should come first
+    assert results[0]["title"] == "Retrieval Augmentation"
+
+
+def test_search_stemming(tmp_vault):
+    """Porter stemming lets 'hallucinate' find 'hallucination'."""
+    vault = Vault(tmp_vault)
+    vault.write_note(Note(
+        title="LLM Hallucination",
+        tags=[],
+        content="LLMs sometimes fabricate plausible-sounding answers.",
+        topic="llm",
+    ))
+    results = vault.search("hallucinate")
+    assert len(results) == 1
+
+
+def test_enrich_note_updates_search_index(tmp_vault):
+    vault = Vault(tmp_vault)
+    vault.write_note(Note(title="A", tags=[], content="initial body", topic="t"))
+
+    # Enrich with a unique token that is not in the initial body
+    vault.enrich_note("A", "zebrafish supercalifragilistic")
+
+    results = vault.search("zebrafish")
+    assert len(results) == 1
+    assert results[0]["title"] == "A"
+
+
+def test_rebuild_search_index_from_scratch(tmp_vault):
+    vault = Vault(tmp_vault)
+    vault.write_note(Note(title="A", tags=[], content="apple banana", topic="t"))
+    vault.write_note(Note(title="B", tags=[], content="cherry date", topic="t"))
+
+    # Nuke the index and rebuild
+    vault.search_index.clear()
+    assert vault.search_index.is_empty()
+
+    count = vault.rebuild_search_index()
+    assert count == 2
+
+    results = vault.search("banana")
+    assert len(results) == 1
+    assert results[0]["title"] == "A"
+
+
+def test_search_cold_vault_auto_rebuilds(tmp_vault):
+    """First search on a vault with notes but no index should auto-rebuild."""
+    # Pre-seed the vault by writing notes directly via a throwaway Vault,
+    # then delete the index to simulate a fresh process opening a vault
+    # it did not write.
+    seed = Vault(tmp_vault)
+    seed.write_note(Note(title="Alpha", tags=[], content="rag content here", topic="t"))
+    seed.write_note(Note(title="Beta", tags=[], content="different content", topic="t"))
+    seed.search_index.close()
+    (tmp_vault / INDEX_FILENAME).unlink()
+
+    # Brand-new Vault instance, cold start
+    fresh = Vault(tmp_vault)
+    results = fresh.search("rag")
+    assert len(results) == 1
+    assert results[0]["title"] == "Alpha"
