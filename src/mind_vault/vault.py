@@ -229,6 +229,68 @@ class Vault:
                 })
         return results
 
+    def hybrid_search(
+        self,
+        query: str,
+        limit: int = 20,
+        rrf_k: int = 60,
+    ) -> list[dict]:
+        """Return notes ranked by Reciprocal Rank Fusion over BM25 + dense.
+
+        RRF score for a document d appearing in ranked list L_i at rank r is
+            sum over i of 1 / (rrf_k + r)
+        where r is 1-indexed. Documents missing from a list contribute 0
+        for that list. rrf_k=60 is the default from the original RRF paper;
+        higher k flattens the curve.
+
+        If the vector index isn't usable (empty vault, embedder fails,
+        etc.) this degrades to pure BM25 — hybrid is a strict superset
+        of search().
+        """
+        if not query or not query.strip():
+            return []
+
+        bm25_results = self.search(query)
+        try:
+            semantic_results = self.semantic_search(query, limit=limit * 2)
+        except Exception as exc:
+            logger.warning(
+                "Hybrid search: semantic leg failed for %r: %s — BM25 only",
+                query, exc,
+            )
+            semantic_results = []
+
+        scores: dict[str, float] = {}
+        meta: dict[str, dict] = {}
+
+        def _fuse(results: list[dict]) -> None:
+            for rank, r in enumerate(results, start=1):
+                # Path is the stable identity — titles can collide.
+                key = r.get("path") or r.get("title", "")
+                if not key:
+                    continue
+                scores[key] = scores.get(key, 0.0) + 1.0 / (rrf_k + rank)
+                if key not in meta:
+                    meta[key] = {
+                        "title": r.get("title", ""),
+                        "path": r.get("path", ""),
+                        "tags": r.get("tags", []),
+                    }
+
+        _fuse(bm25_results)
+        _fuse(semantic_results)
+
+        if not scores:
+            return []
+
+        ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+        out = []
+        for key, score in ranked[:limit]:
+            entry = dict(meta[key])
+            entry["score"] = score
+            out.append(entry)
+        return out
+
     def search_by_tag(self, tag: str) -> list[dict]:
         """Return notes that include the given tag."""
         results = []
