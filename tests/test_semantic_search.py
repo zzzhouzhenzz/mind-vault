@@ -144,3 +144,32 @@ def test_semantic_search_empty_vault_returns_empty(tmp_vault):
     assert vault.semantic_search("anything") == []
     # No encode calls — nothing to embed.
     assert embedder.encode_calls == 0
+
+
+def test_long_note_is_chunked(tmp_vault):
+    """Writing a note with H2 sections should produce multiple vector rows."""
+    embedder = FakeEmbedder()
+    vault = Vault(tmp_vault, embedder=embedder)
+    long_content = (
+        "Intro paragraph with enough filler words to avoid tiny-coalescing "
+        "one two three four five six seven eight nine ten eleven twelve.\n\n"
+        "## Background\n\n"
+        "Background section also with plenty of filler words to stay above "
+        "the min-words threshold one two three four five six seven eight.\n\n"
+        "## Details\n\n"
+        "Details section again with filler one two three four five six "
+        "seven eight nine ten eleven twelve thirteen fourteen fifteen."
+    )
+    vault.write_note(Note(
+        title="Long Note", tags=[], content=long_content, topic="misc",
+    ))
+
+    # Activate vector index
+    vault.rebuild_vector_index()
+    # The single note should produce multiple chunk rows in the index.
+    assert vault.vector_index.count() >= 3
+
+    # Semantic search still dedupes to one result per note.
+    results = vault.semantic_search("background details")
+    titles = [r["title"] for r in results]
+    assert titles.count("Long Note") == 1

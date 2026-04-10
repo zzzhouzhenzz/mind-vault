@@ -7,6 +7,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+from mind_vault.chunker import chunk_note
 from mind_vault.models import Note, Source
 from mind_vault.search_index import SearchIndex
 from mind_vault.vector_index import Embedder, VectorIndex
@@ -511,12 +512,12 @@ class Vault:
     def _chunks_for(self, body: str) -> list[str]:
         """Split a note body into chunks for embedding.
 
-        v1: treat each note as a single chunk. Chunker integration lands
-        in a follow-up commit; keeping this method gives the rest of the
-        code a stable seam to swap in later.
+        Delegates to ``mind_vault.chunker.chunk_note``: short notes stay
+        as a single chunk (matching the pre-chunker behavior), long notes
+        get split on H2/H3 headings with a windowed fallback for any
+        oversized sections. See ``chunker.py`` for the strategy details.
         """
-        body = body.strip()
-        return [body] if body else []
+        return chunk_note(body)
 
     def semantic_search(self, query: str, limit: int = 10) -> list[dict]:
         """Return notes ranked by cosine similarity to ``query``.
