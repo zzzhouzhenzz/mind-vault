@@ -9,6 +9,7 @@ from pathlib import Path
 
 from mind_vault.models import Note, Source
 from mind_vault.search_index import SearchIndex
+from mind_vault.vector_index import Embedder, VectorIndex
 
 logger = logging.getLogger(__name__)
 
@@ -99,9 +100,11 @@ def _strip_frontmatter(text: str) -> str:
 class Vault:
     """Storage layer for Obsidian-compatible markdown notes."""
 
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, embedder: Embedder | None = None):
         self.root = Path(root)
         self._search_index: SearchIndex | None = None
+        self._vector_index: VectorIndex | None = None
+        self._embedder = embedder
 
     @property
     def search_index(self) -> SearchIndex:
@@ -109,6 +112,18 @@ class Vault:
         if self._search_index is None:
             self._search_index = SearchIndex(self.root)
         return self._search_index
+
+    @property
+    def vector_index(self) -> VectorIndex:
+        """Lazily-constructed dense vector index. Does NOT load the embedder.
+
+        The embedder itself is constructed even more lazily, only when
+        something actually calls encode(). This lets write paths cheaply
+        probe ``vector_index.is_empty()`` without downloading any model.
+        """
+        if self._vector_index is None:
+            self._vector_index = VectorIndex(self.root, embedder=self._embedder)
+        return self._vector_index
 
     # ------------------------------------------------------------------
     # Write operations
@@ -122,6 +137,7 @@ class Vault:
         _atomic_write(path, note.to_markdown())
         self._update_indexes()
         self._index_file(path)
+        self._vector_index_file(path)
         return path
 
     def write_source(self, source: Source) -> Path:
@@ -347,6 +363,7 @@ class Vault:
                 enriched = text.rstrip("\n") + "\n\n## Additional Context\n\n" + new_content + "\n"
                 _atomic_write(md_file, enriched)
                 self._index_file(md_file)
+                self._vector_index_file(md_file)
                 return
 
     # ------------------------------------------------------------------
@@ -389,6 +406,119 @@ class Vault:
             self._index_file(md_file)
             count += 1
         logger.info("Rebuilt search index: %d notes", count)
+        return count
+
+    # ------------------------------------------------------------------
+    # Vector index management
+    # ------------------------------------------------------------------
+
+    def _vector_index_file(self, md_file: Path) -> None:
+        """Upsert a vector row for ``md_file`` — only if already activated.
+
+        The vector index auto-activates on first ``semantic_search`` or
+        explicit ``rebuild_vector_index`` call. Until then, every write
+        is a no-op from the vector index's perspective: vaults that only
+        use BM25 never pay the embedder-load cost.
+        """
+        if self.vector_index.is_empty():
+            return  # Not activated yet — skip silently.
+        self._vector_upsert(md_file)
+
+    def _vector_upsert(self, md_file: Path) -> None:
+        """Read, chunk, and embed ``md_file`` into the vector index."""
+        try:
+            text = md_file.read_text(encoding="utf-8")
+        except OSError as exc:
+            logger.warning("Could not read %s for vector indexing: %s", md_file, exc)
+            return
+        try:
+            fm = _parse_frontmatter(text)
+            body = _strip_frontmatter(text)
+            chunks = self._chunks_for(body)
+            if not chunks:
+                return
+            self.vector_index.upsert(
+                path=str(md_file),
+                title=fm.get("title", md_file.stem),
+                chunks=chunks,
+                mtime=md_file.stat().st_mtime,
+            )
+        except Exception as exc:
+            logger.warning("Failed to vector-index %s: %s", md_file, exc)
+
+    def _chunks_for(self, body: str) -> list[str]:
+        """Split a note body into chunks for embedding.
+
+        v1: treat each note as a single chunk. Chunker integration lands
+        in a follow-up commit; keeping this method gives the rest of the
+        code a stable seam to swap in later.
+        """
+        body = body.strip()
+        return [body] if body else []
+
+    def semantic_search(self, query: str, limit: int = 10) -> list[dict]:
+        """Return notes ranked by cosine similarity to ``query``.
+
+        Auto-builds the vector index on first use. Results are deduped
+        to one row per note (best-scoring chunk wins) and returned in
+        the same shape as ``search()`` so callers can treat them
+        interchangeably.
+        """
+        try:
+            if self.vector_index.is_empty():
+                self.rebuild_vector_index()
+            if self.vector_index.is_empty():
+                return []
+
+            # Oversample at the chunk level so dedup to note level still
+            # leaves us with a full page of results.
+            chunk_hits = self.vector_index.search(query, limit=limit * 4)
+        except Exception as exc:
+            logger.warning("Semantic search failed for %r: %s", query, exc)
+            return []
+
+        # Dedupe by path, keeping the highest-scoring chunk per note.
+        by_path: dict[str, dict] = {}
+        for hit in chunk_hits:
+            if hit.path in by_path:
+                continue
+            by_path[hit.path] = {
+                "title": hit.title,
+                "path": hit.path,
+                "score": hit.score,
+                # Tags aren't stored in the vector index; fetch on demand.
+                "tags": self._tags_for_path(hit.path),
+            }
+            if len(by_path) >= limit:
+                break
+
+        return list(by_path.values())
+
+    def _tags_for_path(self, path: str) -> list[str]:
+        """Pull tags from the frontmatter of a note by path. Best-effort."""
+        try:
+            text = Path(path).read_text(encoding="utf-8")
+        except OSError:
+            return []
+        fm = _parse_frontmatter(text)
+        tags = fm.get("tags", [])
+        if isinstance(tags, str):
+            return [tags]
+        return tags
+
+    def rebuild_vector_index(self) -> int:
+        """Wipe and rebuild the vector index from every note on disk.
+
+        This is the first point at which a real embedder is constructed
+        — vaults that never call semantic_search / rebuild_vector_index
+        never load the model. Returns the number of notes embedded.
+        """
+        self.vector_index.clear()
+        count = 0
+        for md_file in _iter_notes(self.root):
+            self._vector_upsert(md_file)
+            count += 1
+        logger.info("Rebuilt vector index: %d notes", count)
         return count
 
     # ------------------------------------------------------------------
