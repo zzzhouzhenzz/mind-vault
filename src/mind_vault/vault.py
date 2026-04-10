@@ -1,5 +1,6 @@
 """Vault operations — read, write, search, and graph traversal for Obsidian-compatible notes."""
 
+import logging
 import os
 import re
 import tempfile
@@ -7,6 +8,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from mind_vault.models import Note, Source
+from mind_vault.search_index import SearchIndex
+
+logger = logging.getLogger(__name__)
 
 # Directories excluded from topic listing
 _EXCLUDED_DIRS = {"_index", "sources", "templates"}
@@ -77,11 +81,34 @@ def _iter_notes(vault_root: Path):
         yield md_file
 
 
+def _strip_frontmatter(text: str) -> str:
+    """Return the body of a note (everything after the closing '---')."""
+    if not text.startswith("---"):
+        return text
+    rest = text[3:]
+    end = rest.find("\n---")
+    if end == -1:
+        return text
+    # Skip the closing '---' and the newline after it (if present)
+    body_start = end + 4
+    if body_start < len(rest) and rest[body_start] == "\n":
+        body_start += 1
+    return rest[body_start:]
+
+
 class Vault:
     """Storage layer for Obsidian-compatible markdown notes."""
 
     def __init__(self, root: Path):
         self.root = Path(root)
+        self._search_index: SearchIndex | None = None
+
+    @property
+    def search_index(self) -> SearchIndex:
+        """Lazily-constructed SQLite FTS5 index over the vault's notes."""
+        if self._search_index is None:
+            self._search_index = SearchIndex(self.root)
+        return self._search_index
 
     # ------------------------------------------------------------------
     # Write operations
@@ -94,6 +121,7 @@ class Vault:
         path = topic_dir / note.filename
         _atomic_write(path, note.to_markdown())
         self._update_indexes()
+        self._index_file(path)
         return path
 
     def write_source(self, source: Source) -> Path:
@@ -137,7 +165,38 @@ class Vault:
     # ------------------------------------------------------------------
 
     def search(self, query: str) -> list[dict]:
-        """Return notes whose content contains query (case-insensitive)."""
+        """Return notes matching `query`, BM25-ranked via the FTS5 index.
+
+        Falls back to a linear substring scan if the index is empty (e.g.
+        fresh vault that was never written through this Vault instance, or
+        one where the index file was deleted). This keeps reads correct
+        even when the index is unavailable.
+        """
+        try:
+            if self.search_index.is_empty():
+                # Cold index (new vault or deleted index) — rebuild from the
+                # filesystem once so subsequent searches are fast.
+                self.rebuild_search_index()
+
+            results = self.search_index.search(query)
+            if results:
+                return [
+                    {"title": r["title"], "path": r["path"], "tags": r["tags"]}
+                    for r in results
+                ]
+            # Empty result from FTS5 could be a legitimate no-match OR a
+            # query our tokenizer stripped to nothing. Fall through to the
+            # linear scan for defense in depth.
+        except Exception as exc:  # sqlite3.Error, etc — never break read path
+            logger.warning(
+                "FTS5 search failed for %r: %s — falling back to linear scan",
+                query, exc,
+            )
+
+        return self._linear_search(query)
+
+    def _linear_search(self, query: str) -> list[dict]:
+        """Original substring scan. Correctness fallback when FTS5 unavailable."""
         query_lower = query.lower()
         results = []
         for md_file in _iter_notes(self.root):
@@ -287,10 +346,53 @@ class Vault:
             if note_title == title or title in aliases:
                 enriched = text.rstrip("\n") + "\n\n## Additional Context\n\n" + new_content + "\n"
                 _atomic_write(md_file, enriched)
+                self._index_file(md_file)
                 return
 
     # ------------------------------------------------------------------
-    # Index management
+    # Search index management
+    # ------------------------------------------------------------------
+
+    def _index_file(self, md_file: Path) -> None:
+        """Upsert the FTS5 row for `md_file`. Never raises — log and continue."""
+        try:
+            text = md_file.read_text(encoding="utf-8")
+        except OSError as exc:
+            logger.warning("Could not read %s for indexing: %s", md_file, exc)
+            return
+        try:
+            fm = _parse_frontmatter(text)
+            body = _strip_frontmatter(text)
+            tags = fm.get("tags", [])
+            if isinstance(tags, str):
+                tags = [tags]
+            self.search_index.upsert(
+                path=str(md_file),
+                title=fm.get("title", md_file.stem),
+                body=body,
+                tags=tags,
+                topic=md_file.parent.name,
+                mtime=md_file.stat().st_mtime,
+            )
+        except Exception as exc:
+            logger.warning("Failed to index %s: %s", md_file, exc)
+
+    def rebuild_search_index(self) -> int:
+        """Wipe and rebuild the FTS5 index from every note on disk.
+
+        Returns the number of notes indexed. Safe to call at any time;
+        the filesystem is source of truth so a rebuild is never lossy.
+        """
+        self.search_index.clear()
+        count = 0
+        for md_file in _iter_notes(self.root):
+            self._index_file(md_file)
+            count += 1
+        logger.info("Rebuilt search index: %d notes", count)
+        return count
+
+    # ------------------------------------------------------------------
+    # Index management (topic-map / tag-index)
     # ------------------------------------------------------------------
 
     def _update_indexes(self) -> None:
