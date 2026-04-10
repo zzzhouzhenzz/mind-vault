@@ -13,11 +13,13 @@ You have access to a personal knowledge vault. Use these tools to search, read, 
 
 ## Reading & searching
 1. Start with `list_topics` to see what subject areas exist.
-2. Use `search_vault` for keyword search across all note content.
+2. Use `search_vault` for BM25-ranked full-text search — title matches outrank body mentions, and porter stemming handles plurals and related word forms.
 3. Use `search_by_tag` to filter by tag (e.g. "ml", "paper", "concept").
 4. Use `read_note` to read the full content of a specific note.
 5. Use `follow_links` and `follow_backlinks` to traverse the knowledge graph.
 6. Iterate: search → read → follow links → search again until you have enough context.
+
+If search results look stale (e.g. after bulk edits outside the vault tools), call `rebuild_search_index`.
 
 ## Writing
 - Use `write_note` to create a new atomic concept note.
@@ -250,6 +252,21 @@ def create_mcp_tools(vault: Vault) -> dict[str, Callable]:
         lines.append(_format_note_list(notes))
         return "\n".join(lines)
 
+    # ------------------------------------------------------------------
+    # Index admin
+    # ------------------------------------------------------------------
+
+    def rebuild_search_index() -> str:
+        """Rebuild the SQLite FTS5 search index from the filesystem.
+
+        Use this after bulk edits, if search results look stale, or after
+        manually adding / removing .md files outside the vault tools.
+        Filesystem is always source of truth; this is safe to call any
+        time.
+        """
+        count = vault.rebuild_search_index()
+        return f"Search index rebuilt: {count} note(s) indexed."
+
     return {
         # Write tools
         "write_note": write_note,
@@ -266,6 +283,8 @@ def create_mcp_tools(vault: Vault) -> dict[str, Callable]:
         "follow_backlinks": follow_backlinks,
         "list_topics": list_topics,
         "list_recent": list_recent,
+        # Index admin
+        "rebuild_search_index": rebuild_search_index,
     }
 
 
