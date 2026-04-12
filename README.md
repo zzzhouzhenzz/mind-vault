@@ -1,8 +1,8 @@
 # Mind Vault
 
-File-based knowledge database. Obsidian-compatible markdown notes with YAML frontmatter, full-text search, tag filtering, wikilink graph traversal, and auto-generated indexes.
+File-based knowledge database. Obsidian-compatible markdown notes with YAML frontmatter, full-text search (FTS5), dense vector search, hybrid retrieval (BM25 + embeddings via RRF), tag filtering, wikilink graph traversal, and auto-generated indexes.
 
-Zero external dependencies for the core. Ships with an MCP server so Claude can search and navigate the vault directly.
+Ships with an MCP server so Claude can search and navigate the vault directly.
 
 ## Install
 
@@ -35,7 +35,9 @@ vault.write_source(Source(
 ))
 
 # Search
-vault.search("attention")              # full-text search
+vault.search("attention")              # BM25 full-text search (FTS5)
+vault.semantic_search("how attention works")  # dense vector search
+vault.hybrid_search("attention mechanism")    # BM25 + dense, RRF fused
 vault.search_by_tag("ml")              # by tag
 vault.search_by_property("source_type", "paper")  # by frontmatter property
 
@@ -122,6 +124,32 @@ Add to `.mcp.json`:
 | Env var | Default | Description |
 |---------|---------|-------------|
 | `MIND_VAULT_DIR` | `~/mind-vault` | Path to the vault directory |
+
+## Search architecture
+
+### BM25 (FTS5)
+
+SQLite FTS5 full-text index, auto-built on first `search()` call. Rebuilt incrementally on `write_note()` and `enrich_note()`.
+
+### Dense vectors
+
+Sentence-transformers `all-MiniLM-L6-v2` (384-dim) embeddings stored in `.vectors.npz` + `.vectors.json` sidecar. Flat cosine similarity — fast enough for O(10k) chunks without an ANN index. Auto-built on first `semantic_search()` call.
+
+### Hybrid search
+
+`hybrid_search()` fuses BM25 and dense ranks via Reciprocal Rank Fusion (k=60). Vector catches paraphrases, BM25 catches exact titles and identifiers.
+
+### Chunking
+
+Long notes are split by H2/H3 headings with tiny-section coalescing and windowed fallback (450 words max, 50 word overlap). Chunk-level vectors are deduped back to note-level for search results.
+
+### Embedder injection
+
+The `Vault` constructor accepts an optional `embedder` parameter for tests:
+
+```python
+vault = Vault("/path/to/vault", embedder=my_fake_embedder)
+```
 
 ## Development
 
